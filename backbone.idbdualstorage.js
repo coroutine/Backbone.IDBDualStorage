@@ -1,8 +1,8 @@
 ;(function (root, factory) {
 
 	if (typeof define === 'function' && define.amd) {
-		define(['backbone', 'underscore'], function(Backbone, _) {
-			return (root.Marionette = factory(root, Backbone, _));
+		define(['backbone', 'underscore', 'backbone-indexeddb'], function(Backbone, _, indexedDbSync) {
+			return (root.Marionette = factory(root, Backbone, _, indexedDbSync));
 		});
 	}
 	else if (typeof exports !== 'undefined') {
@@ -18,10 +18,10 @@
 }(this, function (root, Backbone, _, indexedDbSync) {
 
 	Backbone.DualStorage = {
-		isOnline: false, // change to true to emulate the offline mode
+		persistent: false, // Use it if you need a persistent connection with 
+		forceOffline: false, // change to true to emulate the offline mode
 		offlineStatusCodes: [408, 502]
 	};
-
 
 	// Utility function
 	var modelUpdatedWithResponse = function modelUpdatedWithResponse(model, response) {
@@ -44,6 +44,32 @@
 		}
 	};
 
+	// async.js#eachSeries
+	var eachSeries = function eachSeries(arr, iterator, callback) {
+		callback = callback || function () {};
+		if (!arr.length) {
+			return callback();
+		}
+		var completed = 0;
+		var iterate = function () {
+			iterator(arr[completed], function (err) {
+				if (err) {
+					callback(err);
+					callback = function () {};
+				}
+				else {
+					completed += 1;
+					if (completed >= arr.length) {
+						callback();
+					}
+					else {
+						iterate();
+					}
+				}
+			});
+		};
+		iterate();
+	};
 
 	Backbone.Collection.prototype.syncDirty = function syncDirty(done) {
 		var self = this;
@@ -81,7 +107,7 @@
 			var arrayOfDirtyModels = self.filter(function (aModel) {
 				return dirtyModelIds.indexOf(aModel.id) >= 0;
 			});
-			async.eachSeries(arrayOfDirtyModels, save, function (err) {
+			eachSeries(arrayOfDirtyModels, save, function (err) {
 				if (err) return done(err);
 				done(null, response);
 			});
@@ -124,7 +150,7 @@
 		var storeName = _.result(self, 'storeName');
 		getDestroyedModelIds(storeName, function (err, destroyedModelIds) {
 			if (err) return done(err);
-			async.eachSeries(destroyedModelIds, destroy, function (err) {
+			eachSeries(destroyedModelIds, destroy, function (err) {
 				if (err) return done(err);
 				done(null, response);
 			});
@@ -146,21 +172,22 @@
 		});
 	};
 
+
 	var onlineSync = function onlineSync(method, model, options) {
-		var ajaxSync = Backbone.ajaxSync;
+		if (Backbone.DualStorage.forceOffline) {
+			var fakeResponse = {
+				status: 502,
+				response: 'Fake bad gateway'
+			};
+			return options.error(fakeResponse);
+		}
 
-		if (Backbone.DualStorage.isOnline)
-			return ajaxSync(method, model, options);
-
-		var fakeResponse = {
-			status: 502,
-			response: 'Fake bad gateway'
-		};
-
-		return options.error(fakeResponse);
+		var _ajaxSync = Backbone.ajaxSync;
+		return _ajaxSync(method, model, options);
 	};
 
 	var localSync = function localSync(method, model, options) {
+		var _indexedDbSync = Backbone.indexedDbSync;
 		var success = options.success;
 		var error   = options.error;
 
@@ -182,21 +209,7 @@
 					options.error = function(err) {
 						return responseHandler(err);
 					};
-					indexedDbSync(method, model, options);
-					break;
-				case 'hasDirtyOrDestroyed':
-					store.hasDirtyOrDestroyed(responseHandler);
-					break;
-				case 'reset':
-					if (model instanceof Backbone.Collection) {
-						var collection = model;
-						var storeName = _.result(collection.model.prototype, 'idAttribute');
-						store.reset(storeName, responseHandler);
-					}
-					else {
-						var storeName = _.result(model.prototype, 'idAttribute');
-						store.reset(storeName, responseHandler);
-					}
+					_indexedDbSync(method, model, options);
 					break;
 				case 'create':
 					if (options.add && !options.merge) {
@@ -217,7 +230,7 @@
 						options.error = function (err) {
 							responseHandler(err);
 						};
-						indexedDbSync(method, model, options);
+						_indexedDbSync(method, model, options);
 					}
 					break;
 				case 'update':
@@ -233,7 +246,7 @@
 							});
 						}
 					};
-					indexedDbSync(method, model, options);
+					_indexedDbSync(method, model, options);
 					break;
 				case 'delete':
 					options.success = function (resp) {
@@ -248,17 +261,31 @@
 						else {
 							if (model.hasTempId()) {
 								return store.removeDirty(model, responseHandler);
-							} 
+							}
 							else {
 								return store.removeDestroyed(model, responseHandler);
 							}
 						}
 					};
-					indexedDbSync(method, model, options);
+					_indexedDbSync(method, model, options);
 					break;
 				case 'closeall':
-					indexedDbSync(method, model, options);
+					_indexedDbSync(method, model, options);
 					responseHandler();
+					break;
+				case 'hasDirtyOrDestroyed':
+					store.hasDirtyOrDestroyed(responseHandler);
+					break;
+				case 'reset':
+					if (model instanceof Backbone.Collection) {
+						var collection = model;
+						var storeName = _.result(collection.model.prototype, 'idAttribute');
+						store.reset(storeName, responseHandler);
+					}
+					else {
+						var storeName = _.result(model.prototype, 'idAttribute');
+						store.reset(storeName, responseHandler);
+					}
 					break;
 			}
 		};
@@ -267,17 +294,17 @@
 	};
 
 	var dualSync = function dualSync(method, model, options) {
-		var localSync  = Backbone.localSync; // readed again to prevent
-		var onlineSync = Backbone.onlineSync;
+		var _localSync  = Backbone.localSync;
+		var _onlineSync = Backbone.onlineSync;
 		var success    = options.success;
 		var error      = options.error;
 
 		if (_.result(model, 'local')) {
-			return localSync(method, model, options);
+			return _localSync(method, model, options);
 		}
 
 		if (_.result(model, 'remote')) {
-			return onlineSync(method, model, options);
+			return _onlineSync(method, model, options);
 		}
 
 		var relayErrorCallback = function relayErrorCallback(response) {
@@ -293,7 +320,7 @@
 				options.error = function(err) {
 					return error(err);
 				};
-				localSync(method, model, options);
+				_localSync(method, model, options);
 			}
 			else {
 				return error(response);
@@ -311,7 +338,7 @@
 						options.error = function(err) {
 							return error(err);
 						};
-						localSync(method, model, options)
+						_localSync(method, model, options)
 					}
 					else {
 						options.success = function(resp, status, xhr) {
@@ -336,9 +363,9 @@
 										options.error = function(err) {
 											next(err)
 										};
-										localSync('update', responseModel, options);
+										_localSync('update', responseModel, options);
 									};
-									async.eachSeries(resp, update, function (err) {
+									eachSeries(resp, update, function (err) {
 										if (err) return error(err);
 										return success(resp, status, xhr);
 									});
@@ -351,7 +378,7 @@
 									options.error = function(err) {
 										return error(err);
 									};
-									localSync('reset', collection, options);
+									_localSync('reset', collection, options);
 								}
 								else {
 									updateLocalDB();
@@ -365,19 +392,19 @@
 								options.error = function(err) {
 									return error(err);
 								};
-								localSync('update', responseModel, options);
+								_localSync('update', responseModel, options);
 							}
 						};
 						options.error = function(resp) {
 							return relayErrorCallback(resp);
 						};
-						return onlineSync(method, model, options);
+						return _onlineSync(method, model, options);
 					}
 				};
 				options.error = function(err) {
 					return error(err);
 				};
-				localSync('hasDirtyOrDestroyed', model, options);
+				_localSync('hasDirtyOrDestroyed', model, options);
 				break;
 
 			case 'create':
@@ -390,20 +417,20 @@
 					options.error = function(err) {
 						return error(err);
 					};
-					localSync(method, updatedModel, options);
+					_localSync(method, updatedModel, options);
 				};
 				options.error = function(resp) {
 					return relayErrorCallback(resp);
 				};
-				return onlineSync(method, model, options);
+				return _onlineSync(method, model, options);
 				break;
 
 			case 'clear':
-				localSync(method, model, options);
+				_localSync(method, model, options);
 				break;
 
 			case 'closeall':
-				localSync(method, model, options);
+				_localSync(method, model, options);
 				break;
 
 			case 'update':
@@ -422,12 +449,12 @@
 							options.error = function(err) {
 								return error(err);
 							};
-							localSync('create', updatedModel, options);
+							_localSync('create', updatedModel, options);
 						};
 						options.error = function(resp, status, xhr) {
 							return error(err);
 						};
-						localSync('delete', model, options);
+						_localSync('delete', model, options);
 					};
 					options.error = function(resp) {
 						model.set(model.idAttribute, temporaryId, {
@@ -438,7 +465,7 @@
 					model.set(model.idAttribute, null, {
 						silent: true
 					});
-					return onlineSync('create', model, options);
+					return _onlineSync('create', model, options);
 				}
 				else {
 					options.success = function(resp, status, xhr) {
@@ -450,18 +477,18 @@
 						options.error = function(err) {
 							return error(err);
 						};
-						localSync(method, updatedModel, options);
+						_localSync(method, updatedModel, options);
 					};
 					options.error = function(resp) {
 						return relayErrorCallback(resp);
 					};
-					return onlineSync(method, model, options);
+					return _onlineSync(method, model, options);
 				}
 				break;
 
 			case 'delete':
 				if (model.hasTempId()) {
-					return localSync(method, model, options);
+					return _localSync(method, model, options);
 				}
 				else {
 					options.success = function(resp, status, xhr) {
@@ -471,16 +498,22 @@
 						options.error = function(err) {
 							return error(err);
 						};
-						return localSync(method, model, options);
+						return _localSync(method, model, options);
 					};
 					options.error = function(resp) {
 						return relayErrorCallback(resp);
 					};
-					return onlineSync(method, model, options);
+					return _onlineSync(method, model, options);
 				}
 				break;
 		}
 	};
+
+	// backbone-indexeddb puts the original Backbone.sync into Backbone.ajaxSync,
+	// this behaviour, could change in the near future, and I hope it does, 
+	// so I applied this workaround to be sure that all will works fine
+	if (typeof Backbone.ajaxSync === 'undefined')
+		Backbone.ajaxSync = Backbone.sync;
 
 	Backbone.indexedDbSync = indexedDbSync;
 	Backbone.onlineSync = onlineSync;
