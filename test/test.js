@@ -2,35 +2,12 @@
 var assert = chai.assert;
 
 
-window.indexedDB = window.indexedDB || window.mozIndexedDB || window.webkitIndexedDB || window.msIndexedDB;
-window.IDBTransaction = window.IDBTransaction || window.webkitIDBTransaction || window.msIDBTransaction;
-window.IDBKeyRange = window.IDBKeyRange || window.webkitIDBKeyRange || window.msIDBKeyRange;
-
-
-var deleteDatabase = function deleteDatabase(dbName, done) {
-	setTimeout(function(){
-		var DBDeleteRequest = window.indexedDB.deleteDatabase(dbName);
-		DBDeleteRequest.onerror = function(e) {
-			done(e);
-		};
-		DBDeleteRequest.onsuccess = function(e) {
-			done();
-		};
-		DBDeleteRequest.onblocked = function(e) {
-			done(new Error('Database ' + dbName + ' is blocked'));
-		};
-	}, 200);
-};
-
 var deleteAllDatabase = function deleteAllDatabase(done) {
-	deleteDatabase('testdb', function (err) {
+	IDB.dropDatabase('testdb', function (err) {
 		if (err) return done(err);
-		deleteDatabase('dirty', function (err) {
+		IDB.dropDatabase('dirtystore', function (err) {
 			if (err) return done(err);
-			deleteDatabase('destroyed', function (err) {
-				if (err) return done(err);
-				done();
-			});
+			done();
 		});
 	});
 };
@@ -116,7 +93,6 @@ var getItem = function getItem(options, done) {
 	openDB(options.db, onReady);
 };
 
-
 var Customer = Backbone.Model.extend({
 	database: database,
 	storeName: 'customers',
@@ -148,7 +124,32 @@ describe('DirtyStore', function() {
 
 	it('Reset dirty and destroyed stores', function (done) {
 
-		DirtyStore.create(function (err, store) {
+		var customerA_dirty_id;
+		var customerA_destroyed_id;
+		var customerA = new Customer({
+			_id: 'fake-customer-id-1',
+			firstname: 'Tom',
+			lastname: 'Smith'
+		});
+
+		var customerB_dirty_id;
+		var customerB_destroyed_id;
+		var customerB = new Customer({
+			_id: 'fake-customer-id-2',
+			firstname: 'John',
+			lastname: 'Johnson'
+		});
+
+		var orderA_dirty_id;
+		var orderA_destroyed_id;
+		var orderA = new Order({
+			_id: 'fake-order-id-1',
+			_customerId: 'fake-customer-id-1',
+			total: 550
+		});
+
+
+		DirtyStore.getInstance(function (err, store) {
 			if (err) return done(err);
 
 			var finalize = function finalize() {
@@ -158,20 +159,21 @@ describe('DirtyStore', function() {
 
 			var checkDestroyedStore = function checkDestroyedStore() {
 				var options = {
-					key: 1,
+					key: customerA_destroyed_id,
 					storeName: 'destroyed',
-					db: 'destroyed'
+					db: 'dirtystore'
 				};
 				getItem(options, function (err, result) {
 					if (err) return done(err);
 					assert.isUndefined(result, 'No customer should be saved');
 					var options = {
-						key: 3,
-						storeName: 'dirty',
-						db: 'dirty'
+						key: orderA_destroyed_id,
+						storeName: 'destroyed',
+						db: 'dirtystore'
 					};
 					getItem(options, function (err, result) {
 						if (err) return done(err);
+						console.log(result);
 						assert.isDefined(result, 'Order should be saved');
 						assert.equal(result.modelId, 'fake-order-id-1');
 						finalize();
@@ -181,17 +183,17 @@ describe('DirtyStore', function() {
 
 			var checkDirtyStore = function checkDirtyStore() {
 				var options = {
-					key: 1,
+					key: customerA_dirty_id,
 					storeName: 'dirty',
-					db: 'dirty'
+					db: 'dirtystore'
 				};
 				getItem(options, function (err, result) {
 					if (err) return done(err);
 					assert.isUndefined(result, 'No customer should be saved');
 					var options = {
-						key: 3,
+						key: orderA_dirty_id,
 						storeName: 'dirty',
-						db: 'dirty'
+						db: 'dirtystore'
 					};
 					getItem(options, function (err, result) {
 						if (err) return done(err);
@@ -209,36 +211,29 @@ describe('DirtyStore', function() {
 				});
 			};
 
-			var customerA = new Customer({
-				_id: 'fake-customer-id-1',
-				firstname: 'Matteo',
-				lastname: 'Baggio'
-			});
-
-			var customerB = new Customer({
-				_id: 'fake-customer-id-2',
-				firstname: 'Michele',
-				lastname: 'Belluco'
-			});
-
-			var orderA = new Order({
-				_id: 'fake-order-id-1',
-				_customerId: 'fake-customer-id-1',
-				total: 550
-			});
-
-			store.addDirty(customerA, function (err) {
+			store.addDirty(customerA, function (err, newId) {
 				if (err) return done(err);
-				store.addDirty(customerB, function (err) {
+
+				customerA_dirty_id = newId;
+				store.addDirty(customerB, function (err, newId) {
 					if (err) return done(err);
-					store.addDirty(orderA, function (err) {
+
+					customerB_dirty_id = newId;
+					store.addDirty(orderA, function (err, newId) {
 						if (err) return done(err);
-						store.addDestroyed(customerA, function (err) {
+
+						orderA_dirty_id = newId;
+						store.addDestroyed(customerA, function (err, newId) {
 							if (err) return done(err);
-							store.addDestroyed(customerB, function (err) {
+
+							customerA_destroyed_id = newId;
+							store.addDestroyed(customerB, function (err, newId) {
 								if (err) return done(err);
-								store.addDestroyed(orderA, function (err) {
+
+								customerB_destroyed_id = newId;
+								store.addDestroyed(orderA, function (err, newId) {
 									if (err) return done(err);
+									orderA_destroyed_id = newId;
 									reset();
 								});
 							});
@@ -253,7 +248,7 @@ describe('DirtyStore', function() {
 describe('Offline mode', function() {
 
 	beforeEach(function (done) {
-		Backbone.DualStorage.isOnline = false;
+		Backbone.DualStorage.forceOffline = true;
 		deleteAllDatabase(done);
 	});
 
@@ -268,10 +263,10 @@ describe('Offline mode', function() {
 		customers.add(customer);
 
 		customer.save({
-			firstname: 'Matteo',
-			lastname: 'Baggio',
+			firstname: 'Tom',
+			lastname: 'Smith',
 			company: 'ACME',
-			cf: 'XXXX99999XXXX',
+			
 			vat: '01234567890',
 			iban: 'IT011C010000000000000012234'
 		}, {
@@ -292,12 +287,12 @@ describe('Offline mode', function() {
 		var onSuccess = function onSuccess() {
 			assert.isNotNull(customer.id, 'model.id should be not null');
 			customer.save({
-				firstname: 'Michele',
-				lastname: 'Belluco'
+				firstname: 'John',
+				lastname: 'Johnson'
 			}, {
 				success: function(model) {
-					assert.equal(model.get('firstname'), 'Michele');
-					assert.equal(model.get('lastname'), 'Belluco');
+					assert.equal(model.get('firstname'), 'John');
+					assert.equal(model.get('lastname'), 'Johnson');
 					assert.equal(model.get('company'), 'ACME');
 					done();
 				},
@@ -306,10 +301,10 @@ describe('Offline mode', function() {
 		};
 
 		customer.save({
-			firstname: 'Matteo',
-			lastname: 'Baggio',
+			firstname: 'Tom',
+			lastname: 'Smith',
 			company: 'ACME',
-			cf: 'XXXX99999XXXX',
+			
 			vat: '01234567890',
 			iban: 'IT011C010000000000000012234'
 		}, {
@@ -335,21 +330,21 @@ describe('Offline mode', function() {
 		};
 
 		var checkDirtyStore = function checkDirtyStore(model) {
-			DirtyStore.create(function (err, store) {
+			DirtyStore.getInstance(function (err, store) {
 				store.findDirty(model, function (err, result) {
 					store.close();
 					if (err) return done(err);
-					assert.isNull(result, 'Dirty data should be empty');
+					assert.isUndefined(result, 'Dirty data should be empty');
 					done();
 				});
 			});
 		};
 
 		customer.save({
-			firstname: 'Matteo',
-			lastname: 'Baggio',
+			firstname: 'Tom',
+			lastname: 'Smith',
 			company: 'ACME',
-			cf: 'XXXX99999XXXX',
+			
 			vat: '01234567890',
 			iban: 'IT011C010000000000000012234'
 		}, {
@@ -371,8 +366,8 @@ describe('Offline mode', function() {
 			readedCustomers.fetch({
 				success: function(){
 					assert.equal(readedCustomers.length, 2, 'Customers length should be greater than zero');
-					assert.equal(readedCustomers.get(customerA.id).get('firstname'), 'Matteo');
-					assert.equal(readedCustomers.get(customerB.id).get('firstname'), 'Michele');
+					assert.equal(readedCustomers.get(customerA.id).get('firstname'), 'Tom');
+					assert.equal(readedCustomers.get(customerB.id).get('firstname'), 'John');
 					done();
 				},
 				error: done
@@ -381,8 +376,8 @@ describe('Offline mode', function() {
 
 		var saveCustomerB = function saveCustomerB() {
 			customerB.save({
-				firstname: 'Michele',
-				lastname: 'Belluco',
+				firstname: 'John',
+				lastname: 'Johnson',
 				company: 'ACME',
 			}, {
 				success: readCustomers,
@@ -391,8 +386,8 @@ describe('Offline mode', function() {
 		};
 
 		customerA.save({
-			firstname: 'Matteo',
-			lastname: 'Baggio',
+			firstname: 'Tom',
+			lastname: 'Smith',
 			company: 'ACME',
 		}, {
 			success: saveCustomerB,
@@ -401,15 +396,18 @@ describe('Offline mode', function() {
 	});
 
 	it('Should read a single customer', function (done) {
+		var customer = new Customers();
 		var customerA = new Customer();
+
+		customer.add(customerA);
 
 		var fetchCustomer = function fetchCustomer() {
 			var customerB = new Customer();
 			customerB.set('_id', 'this-is-a-client-id');
 			customerB.fetch({
 				success: function() {
-					assert.equal(customerB.get('firstname'), 'Matteo');
-					assert.equal(customerB.get('lastname'), 'Baggio');
+					assert.equal(customerB.get('firstname'), 'Tom');
+					assert.equal(customerB.get('lastname'), 'Smith');
 					assert.equal(customerB.get('company'), 'ACME');
 					done();
 				},
@@ -419,8 +417,8 @@ describe('Offline mode', function() {
 
 		customerA.save({
 			_id: 'this-is-a-client-id',
-			firstname: 'Matteo',
-			lastname: 'Baggio',
+			firstname: 'Tom',
+			lastname: 'Smith',
 			company: 'ACME'
 		}, {
 			success: function() {
@@ -436,6 +434,8 @@ describe('Offline mode', function() {
 
 describe('Online mode', function() {
 
+	var _onlineSync = Backbone.onlineSync;
+
 	before(function (done) {
 		Backbone.DualStorage.isOnline = true;
 		done();
@@ -446,11 +446,12 @@ describe('Online mode', function() {
 	});
 
 	afterEach(function (done) {
+		Backbone.onlineSync = _onlineSync;
 		closeAllDatabaseConnections(done);
 	});
 
 	it('Should create a new customer', function (done) {
-		Backbone.ajaxSync = function (method, model, options) {
+		Backbone.onlineSync = function (method, model, options) {
 			options.success({
 				_id: 'this-is-the-server-id'
 			});
@@ -466,11 +467,11 @@ describe('Online mode', function() {
 				if (err) return done(err);
 				assert.isNotNull(result, 'Customer should be saved on DB');
 				assert.equal(result._id, 'this-is-the-server-id', 'result._id should filled by the server');
-				assert.equal(result.firstname, 'Matteo');
+				assert.equal(result.firstname, 'Tom');
 
 				var options = {
 					storeName: 'dirty',
-					db: 'dirty'
+					db: 'dirtystore'
 				};
 				getItem(options, function (err, result) {
 					if (err) return done(err);
@@ -486,10 +487,10 @@ describe('Online mode', function() {
 		customers.add(customer);
 
 		customer.save({
-			firstname: 'Matteo',
-			lastname: 'Baggio',
+			firstname: 'Tom',
+			lastname: 'Smith',
 			company: 'ACME',
-			cf: 'XXXX99999XXXX',
+			
 			vat: '01234567890',
 			iban: 'IT011C010000000000000012234'
 		}, {
@@ -516,12 +517,12 @@ describe('Online mode', function() {
 		var updateCustomer = function updateCustomer() {
 			assert.isNotNull(customer.id, 'model.id should be not null');
 			customer.save({
-				firstname: 'Michele',
-				lastname: 'Belluco'
+				firstname: 'John',
+				lastname: 'Johnson'
 			}, {
 				success: function(model) {
-					assert.equal(model.get('firstname'), 'Michele', 'Should update firstname');
-					assert.equal(model.get('lastname'), 'Belluco', 'Should update lastname');
+					assert.equal(model.get('firstname'), 'John', 'Should update firstname');
+					assert.equal(model.get('lastname'), 'Johnson', 'Should update lastname');
 					assert.equal(model.get('company'), 'ACME', 'Should update company');
 					checkDirtyStore();
 				},
@@ -539,12 +540,12 @@ describe('Online mode', function() {
 				if (err) return done(err);
 				assert.isNotNull(result, 'Customer should be saved on DB');
 				assert.equal(result._id, 'this-is-the-server-id', 'result._id should filled by the server');
-				assert.equal(result.firstname, 'Michele', 'Should store the new firstname');
-				assert.equal(result.lastname, 'Belluco', 'Should store the new lastname');
+				assert.equal(result.firstname, 'John', 'Should store the new firstname');
+				assert.equal(result.lastname, 'Johnson', 'Should store the new lastname');
 
 				var options = {
 					storeName: 'dirty',
-					db: 'dirty'
+					db: 'dirtystore'
 				};
 				getItem(options, function (err, result) {
 					if (err) return done(err);
@@ -555,10 +556,10 @@ describe('Online mode', function() {
 		};
 
 		customer.save({
-			firstname: 'Matteo',
-			lastname: 'Baggio',
+			firstname: 'Tom',
+			lastname: 'Smith',
 			company: 'ACME',
-			cf: 'XXXX99999XXXX',
+			
 			vat: '01234567890',
 			iban: 'IT011C010000000000000012234'
 		}, {
@@ -599,11 +600,11 @@ describe('Online mode', function() {
 				if (err) return done(err);
 				assert.isUndefined(result, 'Customer should be deleted');
 
-				getItem({ storeName: 'dirty', db: 'dirty' }, function (err, result) {
+				getItem({ storeName: 'dirty', db: 'dirtystore' }, function (err, result) {
 					if (err) return done(err);
 					assert.isUndefined(result, 'Dirty store should be empty');
 
-					getItem({ storeName: 'destroyed', db: 'destroyed' }, function (err, result) {
+					getItem({ storeName: 'destroyed', db: 'dirtystore' }, function (err, result) {
 						if (err) return done(err);
 						assert.isUndefined(result, 'Destroyed store should be empty');
 						done();
@@ -613,10 +614,10 @@ describe('Online mode', function() {
 		};
 
 		customer.save({
-			firstname: 'Matteo',
-			lastname: 'Baggio',
+			firstname: 'Tom',
+			lastname: 'Smith',
 			company: 'ACME',
-			cf: 'XXXX99999XXXX',
+			
 			vat: '01234567890',
 			iban: 'IT011C010000000000000012234'
 		}, {
@@ -630,14 +631,14 @@ describe('Online mode', function() {
 			var data = [
 				{
 					_id: 'this-is-the-server-id-A',
-					firstname: 'Matteo',
-					lastname: 'Baggio',
+					firstname: 'Tom',
+					lastname: 'Smith',
 					company: 'ACME'
 				},
 				{
 					_id: 'this-is-the-server-id-B',
-					firstname: 'Michele',
-					lastname: 'Belluco',
+					firstname: 'John',
+					lastname: 'Johnson',
 					company: 'ACME'
 				}
 			];
@@ -652,8 +653,8 @@ describe('Online mode', function() {
 			};
 			getItem(options, function (err, result) {
 				if (err) return done(err);
-				assert.equal(result.firstname, 'Michele');
-				assert.equal(result.lastname, 'Belluco');
+				assert.equal(result.firstname, 'John');
+				assert.equal(result.lastname, 'Johnson');
 				done();
 			});
 		};
@@ -666,8 +667,8 @@ describe('Online mode', function() {
 			};
 			getItem(options, function (err, result) {
 				if (err) return done(err);
-				assert.equal(result.firstname, 'Matteo');
-				assert.equal(result.lastname, 'Baggio');
+				assert.equal(result.firstname, 'Tom');
+				assert.equal(result.lastname, 'Smith');
 				checkCustomerB();
 			});
 		};
@@ -685,8 +686,8 @@ describe('Online mode', function() {
 		Backbone.onlineSync = function (method, model, options) {
 			var data = {
 				_id: 'this-is-the-server-id',
-				firstname: 'Matteo',
-				lastname: 'Baggio',
+				firstname: 'Tom',
+				lastname: 'Smith',
 				company: 'ACME'
 			};
 			options.success(data);
@@ -698,8 +699,8 @@ describe('Online mode', function() {
 
 		customerA.fetch({
 			success: function() {
-				assert.equal(customerA.get('firstname'), 'Matteo');
-				assert.equal(customerA.get('lastname'), 'Baggio');
+				assert.equal(customerA.get('firstname'), 'Tom');
+				assert.equal(customerA.get('lastname'), 'Smith');
 				assert.equal(customerA.get('company'), 'ACME');
 				done();
 			},
@@ -711,14 +712,14 @@ describe('Online mode', function() {
 
 		var serverCustomerA = {
 			_id: 'this-is-the-server-A',
-			firstname: 'Matteo',
-			lastname: 'Baggio',
+			firstname: 'Tom',
+			lastname: 'Smith',
 			company: 'ACME'
 		};
 		var serverCustomerB = {
 			_id: 'this-is-the-server-B',
-			firstname: 'Michele',
-			lastname: 'Belluco',
+			firstname: 'John',
+			lastname: 'Johnson',
 			company: 'ACME'
 		};
 
@@ -764,8 +765,8 @@ describe('Online mode', function() {
 			customers.syncDirtyAndDestroyed(function (err, response) {
 				if (err) return done(err);
 				var cA = serverDB.byId['this-is-the-server-A'];
-				assert.equal(cA.firstname, 'Matteo');
-				assert.equal(cA.lastname, 'Baggio');
+				assert.equal(cA.firstname, 'Tom');
+				assert.equal(cA.lastname, 'Smith');
 				assert.equal(cA.company, 'New Co.');
 				var cB = serverDB.byId['this-is-the-server-B'];
 				assert.isUndefined(cB);
@@ -792,7 +793,7 @@ describe('Online mode', function() {
 			var customerB = customers.get('this-is-the-server-B');
 
 			assert.isNotNull(customerA);
-			assert.equal(customerA.get('firstname'), 'Matteo');
+			assert.equal(customerA.get('firstname'), 'Tom');
 			assert.isNotNull(customerB);
 
 			// Emulate offline

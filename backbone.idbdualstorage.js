@@ -1,24 +1,314 @@
 ;(function (root, factory) {
 
 	if (typeof define === 'function' && define.amd) {
-		define(['backbone', 'underscore', 'backbone-indexeddb'], function(Backbone, _, indexedDbSync) {
-			return (root.Marionette = factory(root, Backbone, _, indexedDbSync));
+		define(['backbone', 'underscore', 'backbone-indexeddb', 'idb'], function (Backbone, _, indexedDbSync, IDB) {
+			var obj = factory(root, Backbone, _, indexedDbSync, IDB);
+			root.Backbone.sync = obj.dualSync;
+			return obj;
 		});
 	}
 	else if (typeof exports !== 'undefined') {
 		var Backbone = require('backbone');
 		var _ = require('underscore');
 		var indexedDbSync = require('backbone-indexeddb').sync;
-		module.exports = factory(root, Backbone, _, indexedDbSync);
+		var IDB = require('idb');
+		module.exports = factory(root, Backbone, _, indexedDbSync, idb);
 	}
 	else {
-		root.Marionette = factory(root, root.Backbone, root._);
+		var obj = factory(root, root.Backbone, root._, root.Backbone.sync, root.IDB);
+		root.Backbone.sync = obj.dualSync;
+		root.DirtyStore = obj.DirtyStore;
 	}
 
 }(this, function (root, Backbone, _, indexedDbSync) {
 
+
+	// Generate four random hex digits.
+	function S4() {
+		return (((1 + Math.random()) * 0x10000) | 0).toString(16).substring(1);
+	}
+	// Generate a pseudo-GUID by concatenating random hexadecimal.
+	function guid() {
+		return (S4() + S4() + "-" + S4() + "-" + S4() + "-" + S4() + "-" + S4() + S4() + S4());
+	}
+
+
+	var instance;
+
+	var DirtyStore = function DirtyStore() {};
+
+	DirtyStore.getInstance = function getInstance(done) {
+		/* // Singleton
+		if (!instance) {
+			var instance = new DirtyStore();
+			instance.init(function (err) {
+				if (err) return done(err);
+				return done(null, instance);
+			});
+		}
+		else {
+			done(null, instance);
+		}
+		*/
+
+		var newInstance = new DirtyStore();
+		newInstance.init(function (err) {
+			if (err) return done(err);
+			return done(null, newInstance);
+		});
+	};
+
+	DirtyStore.prototype.init = function init(done) {
+		var self = this;
+
+		var options = {
+			name: 'dirtystore',
+			version: 1
+		};
+
+		var db = self.db = new IDB(options);
+		db.onConnect = function() {
+			done();
+		};
+		db.onError = function (err) {
+			done(err);
+		};
+		db.onUpgrade = function(db, oldVersion, newVersion) {
+			// Version 1
+			if (oldVersion < 1 && 1 <= newVersion) {
+				var dirtyStore = db.createObjectStore('dirty', { keyPath: 'id', autoIncrement: false });
+				dirtyStore.createIndex('modelIdAndStoreNameIndex', ['modelId', 'storeName'], { unique: true });
+				dirtyStore.createIndex('storeNameIndex', 'storeName', { unique: false });
+
+				var destroyedStore = db.createObjectStore('destroyed', { keyPath: 'id', autoIncrement: false });
+				destroyedStore.createIndex('modelIdAndStoreNameIndex', ['modelId', 'storeName'], { unique: true });
+				destroyedStore.createIndex('storeNameIndex', 'storeName', { unique: false });
+			}
+		};
+	};
+
+	DirtyStore.prototype.addDirty = function addDirty(model, done) {
+		var self = this;
+
+		self.findDirty(model, function (err, result) {
+			if (err) return done(err);
+			if (result) return done(null, result.id);
+			var data = {
+				id: self.getNewId(),
+				modelId: model.id,
+				storeName: _.result(model, 'storeName')
+			};
+			self.db.add('dirty', data, done);
+		});
+
+		return self;
+	};
+
+	DirtyStore.prototype.addDestroyed = function addDestroyed(model, done) {
+		var self = this;
+
+		self.findDestroyed(model, function (err, result) {
+			if (err) return done(err);
+			if (result) return done(null, result.id);
+			var data = {
+				id: self.getNewId(),
+				modelId: model.id,
+				storeName: _.result(model, 'storeName')
+			};
+			self.db.add('destroyed', data, done);
+		});
+
+		return self;
+	};
+
+	DirtyStore.prototype.clear = function clear(done) {
+		var self = this;
+		self.db.clear('dirty', function (err) {
+			if (err) return done(err);
+			self.db.clear('destroyed', function (err) {
+				if (err) return done(err);
+				done();
+			});
+		});
+	};
+
+	DirtyStore.prototype.hasDirtyOrDestroyed = function hasDirtyOrDestroyed(done) {
+		var self = this;
+
+		self.db.count('dirty', function (err, count) {
+			if (err) return done(err);
+			if (count > 0) return done(null, true);
+
+			self.db.count('destroyed', function (err, count) {
+				if (err) return done(err);
+				if (count > 0) return done(null, true);
+				return done(null, false);
+			});
+		});
+	};
+
+	DirtyStore.prototype.findDirty = function findDirty(model, done) {
+		var self = this;
+		var store = _.result(model, 'storeName');
+
+		if (!model.id)
+			return done();
+
+		var conditions = {
+			index: 'modelIdAndStoreNameIndex',
+			keyRange: self.db.makeKeyRange({
+				only: [model.id, store]
+			})
+		};
+
+		self.db.find('dirty', conditions, function (err, result) {
+			if (err) return done(err);
+			if (result.length > 0)
+				done(null, result[0]);
+			else
+				done();
+		});
+	};
+
+	DirtyStore.prototype.findAllDirty = function findAllDirty(store, done) {
+		var self = this;
+
+		var conditions = {
+			index: 'storeNameIndex',
+			keyRange: self.db.makeKeyRange({
+				only: store
+			}),
+		};
+
+		self.db.find('dirty', conditions, function (err, results) {
+			if (err) return done(err);
+			done(null, results);
+		});
+	};
+
+	DirtyStore.prototype.findDestroyed = function findDestroyed(model, done) {
+		var self = this;
+		var store = _.result(model, 'storeName');
+
+		if (!model.id)
+			return done();
+
+		var conditions = {
+			index: 'modelIdAndStoreNameIndex',
+			keyRange: self.db.makeKeyRange({
+				only: [model.id, store]
+			})
+		};
+
+		self.db.find('destroyed', conditions, function (err, result) {
+			if (err) return done(err);
+			if (result.length > 0)
+				done(null, result[0]);
+			else
+				done();
+		});
+	};
+
+	DirtyStore.prototype.findAllDestroyed = function findAllDestroyed(store, done) {
+		var self = this;
+
+		var conditions = {
+			index: 'storeNameIndex',
+			keyRange: self.db.makeKeyRange({
+				only: store
+			}),
+		};
+
+		self.db.find('destroyed', conditions, function (err, results) {
+			if (err) return done(err);
+			done(null, results);
+		});
+	};
+
+	DirtyStore.prototype.removeDirty = function removeDirty(model, done) {
+		var self = this;
+
+		var removed = function removed(err) {
+			if (err) return done(err);
+			done();
+		};
+
+		self.findDirty(model, function (err, result) {
+			if (err) return done(err);
+			if (!result) return done(null, result);
+			self.db.delete('dirty', result.id, removed);
+		});
+	};
+
+	DirtyStore.prototype.removeDestroyed = function removeDestroyed(model, done) {
+		var self = this;
+
+		var removed = function removed(err) {
+			if (err) return done(err);
+			done();
+		};
+
+		self.findDestroyed(model, function (err, result) {
+			if (err) return done(err);
+			if (!result) return done(null, result);
+			self.db.delete('destroyed', result.id, removed);
+		});
+	};
+
+	DirtyStore.prototype.reset = function reset(store, done) {
+		var self = this;
+		self.resetDirty(store, function (err) {
+			if (err) return done(err);
+			self.resetDestroyed(store, function (err) {
+				if (err) return done(err);
+				done();
+			});
+		});
+	};
+
+	DirtyStore.prototype.resetDirty = function resetDirty(store, done) {
+		var self = this;
+		var conditions = {
+			index: 'storeNameIndex',
+			keyRange: self.db.makeKeyRange({
+				only: store
+			}),
+		};
+		self.db.deleteAll('dirty', conditions, function (err) {
+			if (err) return done(err);
+			done();
+		});
+	};
+
+	DirtyStore.prototype.resetDestroyed = function resetDestroyed(store, done) {
+		var self = this;
+		var conditions = {
+			index: 'storeNameIndex',
+			keyRange: self.db.makeKeyRange({
+				only: store
+			}),
+		};
+		self.db.deleteAll('destroyed', conditions, function (err) {
+			if (err) return done(err);
+			done();
+		});
+	};
+
+	DirtyStore.prototype.close = function close() {
+		this.db.close();
+	};
+
+	DirtyStore.prototype.getNewId = function getNewId() {
+		return guid();
+	};
+
+
+
+
+
+
 	Backbone.DualStorage = {
-		persistent: false, // Use it if you need a persistent connection with 
+		persistent: false, // Use it if you need a persistent connection (not implemented yet)
 		forceOffline: false, // change to true to emulate the offline mode
 		offlineStatusCodes: [408, 502]
 	};
@@ -71,6 +361,12 @@
 		iterate();
 	};
 
+
+
+	Backbone.Model.prototype.hasTempId = function() {
+		return _.isString(this.id) && this.id.length === 36;
+	};
+
 	Backbone.Collection.prototype.syncDirty = function syncDirty(done) {
 		var self = this;
 
@@ -88,7 +384,7 @@
 		};
 
 		var getDirtyModelIds = function (store, callback) {
-			DirtyStore.create(function (err, store) {
+			DirtyStore.getInstance(function (err, store) {
 				if (err) return callback(err);
 				store.findAllDirty(storeName, function (err, dirtyModels) {
 					if (err) return callback(err);
@@ -134,7 +430,7 @@
 		};
 
 		var getDestroyedModelIds = function (store, callback) {
-			DirtyStore.create(function (err, store) {
+			DirtyStore.getInstance(function (err, store) {
 				if (err) return callback(err);
 				store.findAllDestroyed(storeName, function (err, destroyedModels) {
 					if (err) return callback(err);
@@ -171,6 +467,7 @@
 			});
 		});
 	};
+
 
 
 	var onlineSync = function onlineSync(method, model, options) {
@@ -220,7 +517,7 @@
 							if (options.dirty) {
 								var updatedModel = modelUpdatedWithResponse(model, resp);
 								store.addDirty(updatedModel, function (err) {
-									return responseHandler(null, updatedModel);
+									return responseHandler(err, updatedModel);
 								});
 							}
 							else {
@@ -290,7 +587,7 @@
 			}
 		};
 
-		DirtyStore.create(onReady);
+		DirtyStore.getInstance(onReady);
 	};
 
 	var dualSync = function dualSync(method, model, options) {
@@ -520,6 +817,9 @@
 	Backbone.localSync = localSync;
 	Backbone.dualSync = dualSync;
 
-	return Backbone.dualSync;
+	return {
+		dualSync: Backbone.dualSync,
+		DirtyStore: DirtyStore
+	};
 }));
 

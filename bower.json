@@ -1,0 +1,42 @@
+{
+  "name": "Backbone.IDBDualStorage",
+  "main": "backbone.idbdualstorage.ks",
+  "version": "0.0.1",
+  "homepage": "https://github.com/insideabit/Backbone.IDBDualStorage",
+  "authors": [
+    "Inside a bit"
+  ],
+  "description": "A dual (IndexedDB and REST) sync adapter for Backbone.js",
+  "moduleType": [
+    "amd",
+    "globals",
+    "node"
+  ],
+  "keywords": [
+    "backbone",
+    "storage",
+    "adapter",
+    "sync",
+    "indexeddb",
+    "idb"
+  ],
+  "license": "MIT",
+  "ignore": [
+    "**/.*",
+    "node_modules",
+    "bower_components",
+    "test",
+    "tests"
+  ],
+  "dependencies": {
+    "backbone": "~1.1.2",
+    "underscore": "~1.7.0",
+    "indexeddb-backbonejs-adapter": "git://github.com/SonoIo/indexeddb-backbonejs-adapter.git#master",
+    "jquery": "~2.1.1",
+    "idb": "~1.0.0"
+  },
+  "devDependencies": {
+    "mocha": "~1.21.4",
+    "chai": "~1.9.2"
+  }
+}
