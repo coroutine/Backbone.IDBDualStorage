@@ -12,7 +12,7 @@
 		var _ = require('underscore');
 		var indexedDbSync = require('backbone-indexeddb').sync;
 		var IDB = require('idb');
-		module.exports = factory(root, Backbone, _, indexedDbSync, idb);
+		module.exports = factory(root, Backbone, _, indexedDbSync, IDB);
 	}
 	else {
 		var obj = factory(root, root.Backbone, root._, root.Backbone.sync, root.IDB);
