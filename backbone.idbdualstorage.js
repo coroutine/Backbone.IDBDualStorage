@@ -517,11 +517,11 @@
 							if (options.dirty) {
 								var updatedModel = modelUpdatedWithResponse(model, resp);
 								store.addDirty(updatedModel, function (err) {
-									return responseHandler(err, updatedModel);
+									return responseHandler(err, updatedModel.attributes);
 								});
 							}
 							else {
-								return responseHandler(null, model);
+								return responseHandler(null, model.attributes);
 							}
 						};
 						options.error = function (err) {
@@ -611,8 +611,8 @@
 			offline = response.status === 0 || (_ref = response.status, [].indexOf.call(offlineStatusCodes, _ref) >= 0);
 			if (offline) {
 				options.dirty = true;
-				options.success = function(model) {
-					return success(model.attributes);
+				options.success = function(resp) {
+					return success(resp);
 				};
 				options.error = function(err) {
 					return error(err);
@@ -708,8 +708,8 @@
 				options.success = function(resp, status, xhr) {
 					var updatedModel;
 					updatedModel = modelUpdatedWithResponse(model, resp);
-					options.success = function(model) {
-						return success(model.attributes);
+					options.success = function(resp) {
+						return success(resp);
 					};
 					options.error = function(err) {
 						return error(err);

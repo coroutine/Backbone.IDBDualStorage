@@ -3,13 +3,15 @@ var assert = chai.assert;
 
 
 var deleteAllDatabase = function deleteAllDatabase(done) {
-	IDB.dropDatabase('testdb', function (err) {
-		if (err) return done(err);
-		IDB.dropDatabase('dirtystore', function (err) {
+	setTimeout(function() {
+		IDB.dropDatabase('testdb', function (err) {
 			if (err) return done(err);
-			done();
+			IDB.dropDatabase('dirtystore', function (err) {
+				if (err) return done(err);
+				done();
+			});
 		});
-	});
+	}, 200);
 };
 
 var closeAllDatabaseConnections = function closeAllDatabaseConnections(done) {
@@ -485,12 +487,10 @@ describe('Online mode', function() {
 		var customer = new Customer();
 
 		customers.add(customer);
-
 		customer.save({
 			firstname: 'Tom',
 			lastname: 'Smith',
 			company: 'ACME',
-			
 			vat: '01234567890',
 			iban: 'IT011C010000000000000012234'
 		}, {
