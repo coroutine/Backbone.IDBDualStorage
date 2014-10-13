@@ -20,7 +20,7 @@
 		root.DirtyStore = obj.DirtyStore;
 	}
 
-}(this, function (root, Backbone, _, indexedDbSync) {
+}(this, function (root, Backbone, _, indexedDbSync, IDB) {
 
 
 	// Generate four random hex digits.
